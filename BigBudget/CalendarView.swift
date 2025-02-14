@@ -268,7 +268,7 @@ struct CalendarView: View {
             }
             .sheet(isPresented: $showingPaymentChecklist) {
                 NavigationStack {
-                    PaymentChecklistView(viewModel: viewModel)
+                    PaymentChecklistView(viewModel: viewModel, initialMonth: selectedDate)
                 }
                 .presentationDragIndicator(.visible)
             }
@@ -1118,8 +1118,11 @@ class CalendarViewModel: ObservableObject {
         let calendar = Calendar.current
         
         // Generate instances for the next year
+        let startDate = calendar.startOfDay(for: entry.date)
         let endDate = calendar.date(byAdding: .year, value: 1, to: entry.date)!
-        var currentDate = calendar.date(byAdding: entry.recurringType.dateComponent, value: 1, to: entry.date) ?? entry.date
+        
+        // Get the first occurrence after the start date
+        var currentDate = calendar.date(byAdding: entry.recurringType.dateComponent, value: 1, to: startDate)!
         
         while currentDate <= endDate {
             let newEntry = BudgetEntry(
@@ -1211,9 +1214,10 @@ class CalendarViewModel: ObservableObject {
             // Convert loaded expenses to BudgetEntries
             var loadedEntries: [BudgetEntry] = []
             
-            for expense in dataStore.expenses {
-                // Create the base entry
-                let baseEntry = BudgetEntry(
+            // First, add all non-recurring entries
+            let nonRecurringExpenses = dataStore.expenses.filter { !$0.isRecurring }
+            loadedEntries.append(contentsOf: nonRecurringExpenses.map { expense in
+                BudgetEntry(
                     id: expense.id,
                     date: expense.dueDate,
                     title: expense.name,
@@ -1224,11 +1228,28 @@ class CalendarViewModel: ObservableObject {
                     isPaid: expense.isPaid,
                     paidDate: expense.paidDate
                 )
-                
-                loadedEntries.append(baseEntry)
-                
-                // Generate future recurring entries if it's a recurring expense
-                if baseEntry.isRecurring {
+            })
+            
+            // Then handle recurring entries
+            let recurringExpenses = dataStore.expenses.filter { $0.isRecurring }
+            for expense in dataStore.expenses {
+                if expense.isRecurring {
+                    // Create the base entry
+                    let baseEntry = BudgetEntry(
+                        id: expense.id,
+                        date: expense.dueDate,
+                        title: expense.name,
+                        amount: expense.amount,
+                        notes: "",
+                        recurringType: expense.recurringType,
+                        entryType: .regular,
+                        isPaid: expense.isPaid,
+                        paidDate: expense.paidDate
+                    )
+                    
+                    loadedEntries.append(baseEntry)
+                    
+                    // Generate future entries starting from the base entry's date
                     let futureEntries = generateRecurringEntries(from: baseEntry)
                     loadedEntries.append(contentsOf: futureEntries)
                 }
@@ -1333,7 +1354,12 @@ extension RecurringType {
 struct PaymentChecklistView: View {
     @ObservedObject var viewModel: CalendarViewModel
     @Environment(\.calendar) var calendar
-    @State private var selectedMonth = Date()
+    @State private var selectedMonth: Date
+    
+    init(viewModel: CalendarViewModel, initialMonth: Date) {
+        self.viewModel = viewModel
+        _selectedMonth = State(initialValue: initialMonth)
+    }
     
     private func changeMonth(by value: Int) {
         if let newDate = calendar.date(byAdding: .month, value: value, to: selectedMonth) {
