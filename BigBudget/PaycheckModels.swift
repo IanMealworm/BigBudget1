@@ -186,6 +186,18 @@ class PaycheckManager: ObservableObject {
         )
     }
     
+    private func getUsersFile() -> URL {
+        let containerURL = FileManager.default.url(forUbiquityContainerIdentifier: nil)?.appendingPathComponent("Documents") 
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        
+        // Create the Documents directory if it doesn't exist
+        if let cloudURL = FileManager.default.url(forUbiquityContainerIdentifier: nil)?.appendingPathComponent("Documents") {
+            try? FileManager.default.createDirectory(at: cloudURL, withIntermediateDirectories: true)
+        }
+        
+        return containerURL.appendingPathComponent("paycheckUsers.json")
+    }
+    
     private func saveUsers() {
         do {
             // Print debug info before saving
@@ -197,8 +209,9 @@ class PaycheckManager: ObservableObject {
                 print("State: \(user.taxRates.stateIncomeTax * 100)%")
             }
             
+            let fileURL = getUsersFile().excludedFromBackup(false)
             let data = try JSONEncoder().encode(users)
-            try data.write(to: getUsersFile())
+            try data.write(to: fileURL)
         } catch {
             print("Error saving users: \(error)")
         }
@@ -206,25 +219,39 @@ class PaycheckManager: ObservableObject {
     
     private func loadUsers() {
         do {
-            let data = try Data(contentsOf: getUsersFile())
-            users = try JSONDecoder().decode([PaycheckUser].self, from: data)
+            let fileURL = getUsersFile()
             
-            // Print debug info after loading
-            for user in users {
-                print("\nLoaded tax rates for \(user.name):")
-                print("Federal: \(user.taxRates.federalIncomeTax * 100)%")
-                print("Social Security: \(user.taxRates.socialSecurity * 100)%")
-                print("Medicare: \(user.taxRates.medicare * 100)%")
-                print("State: \(user.taxRates.stateIncomeTax * 100)%")
+            // Start a background task to coordinate with iCloud
+            let coordinator = NSFileCoordinator()
+            var error: NSError?
+            
+            coordinator.coordinate(readingItemAt: fileURL, options: .withoutChanges, error: &error) { url in
+                do {
+                    let data = try Data(contentsOf: url)
+                    let loadedUsers = try JSONDecoder().decode([PaycheckUser].self, from: data)
+                    
+                    DispatchQueue.main.async {
+                        self.users = loadedUsers
+                        
+                        // Print debug info after loading
+                        for user in self.users {
+                            print("\nLoaded tax rates for \(user.name):")
+                            print("Federal: \(user.taxRates.federalIncomeTax * 100)%")
+                            print("Social Security: \(user.taxRates.socialSecurity * 100)%")
+                            print("Medicare: \(user.taxRates.medicare * 100)%")
+                            print("State: \(user.taxRates.stateIncomeTax * 100)%")
+                        }
+                    }
+                } catch {
+                    print("Error loading users: \(error)")
+                    DispatchQueue.main.async {
+                        self.users = []
+                    }
+                }
             }
         } catch {
             print("Error loading users: \(error)")
             users = []
         }
-    }
-    
-    private func getUsersFile() -> URL {
-        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return documentsDirectory.appendingPathComponent("paycheckUsers.json")
     }
 } 

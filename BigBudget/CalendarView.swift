@@ -1173,6 +1173,18 @@ class CalendarViewModel: ObservableObject {
     
     private let calendar = Calendar.current
     
+    private func getEntriesFile() -> URL {
+        let containerURL = FileManager.default.url(forUbiquityContainerIdentifier: nil)?.appendingPathComponent("Documents") 
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        
+        // Create the Documents directory if it doesn't exist
+        if let cloudURL = FileManager.default.url(forUbiquityContainerIdentifier: nil)?.appendingPathComponent("Documents") {
+            try? FileManager.default.createDirectory(at: cloudURL, withIntermediateDirectories: true)
+        }
+        
+        return containerURL.appendingPathComponent("budgetEntries.json")
+    }
+    
     private func saveEntries() {
         do {
             // Convert BudgetEntries to Expenses for saving
@@ -1199,8 +1211,9 @@ class CalendarViewModel: ObservableObject {
                 deposits: deposits
             )
             
+            let fileURL = getEntriesFile().excludedFromBackup(false)
             let data = try JSONEncoder().encode(dataStore)
-            try data.write(to: getEntriesFile())
+            try data.write(to: fileURL)
         } catch {
             print("Error saving entries: \(error)")
         }
@@ -1208,67 +1221,81 @@ class CalendarViewModel: ObservableObject {
     
     private func loadEntries() {
         do {
-            let data = try Data(contentsOf: getEntriesFile())
-            let dataStore = try JSONDecoder().decode(DataStore.self, from: data)
+            let fileURL = getEntriesFile()
             
-            // Convert loaded expenses to BudgetEntries
-            var loadedEntries: [BudgetEntry] = []
+            // Start a background task to coordinate with iCloud
+            let coordinator = NSFileCoordinator()
+            var error: NSError?
             
-            // First, add all non-recurring entries
-            let nonRecurringExpenses = dataStore.expenses.filter { !$0.isRecurring }
-            loadedEntries.append(contentsOf: nonRecurringExpenses.map { expense in
-                BudgetEntry(
-                    id: expense.id,
-                    date: expense.dueDate,
-                    title: expense.name,
-                    amount: expense.amount,
-                    notes: "",
-                    recurringType: expense.recurringType,
-                    entryType: .regular,
-                    isPaid: expense.isPaid,
-                    paidDate: expense.paidDate
-                )
-            })
-            
-            // Then handle recurring entries
-            let recurringExpenses = dataStore.expenses.filter { $0.isRecurring }
-            for expense in dataStore.expenses {
-                if expense.isRecurring {
-                    // Create the base entry
-                    let baseEntry = BudgetEntry(
-                        id: expense.id,
-                        date: expense.dueDate,
-                        title: expense.name,
-                        amount: expense.amount,
-                        notes: "",
-                        recurringType: expense.recurringType,
-                        entryType: .regular,
-                        isPaid: expense.isPaid,
-                        paidDate: expense.paidDate
-                    )
+            coordinator.coordinate(readingItemAt: fileURL, options: .withoutChanges, error: &error) { url in
+                do {
+                    let data = try Data(contentsOf: url)
+                    let dataStore = try JSONDecoder().decode(DataStore.self, from: data)
                     
-                    loadedEntries.append(baseEntry)
-                    
-                    // Generate future entries starting from the base entry's date
-                    let futureEntries = generateRecurringEntries(from: baseEntry)
-                    loadedEntries.append(contentsOf: futureEntries)
+                    DispatchQueue.main.async {
+                        // Convert loaded expenses to BudgetEntries
+                        var loadedEntries: [BudgetEntry] = []
+                        
+                        // First, add all non-recurring entries
+                        let nonRecurringExpenses = dataStore.expenses.filter { !$0.isRecurring }
+                        loadedEntries.append(contentsOf: nonRecurringExpenses.map { expense in
+                            BudgetEntry(
+                                id: expense.id,
+                                date: expense.dueDate,
+                                title: expense.name,
+                                amount: expense.amount,
+                                notes: "",
+                                recurringType: expense.recurringType,
+                                entryType: .regular,
+                                isPaid: expense.isPaid,
+                                paidDate: expense.paidDate
+                            )
+                        })
+                        
+                        // Then handle recurring entries
+                        let recurringExpenses = dataStore.expenses.filter { $0.isRecurring }
+                        for expense in dataStore.expenses {
+                            if expense.isRecurring {
+                                // Create the base entry
+                                let baseEntry = BudgetEntry(
+                                    id: expense.id,
+                                    date: expense.dueDate,
+                                    title: expense.name,
+                                    amount: expense.amount,
+                                    notes: "",
+                                    recurringType: expense.recurringType,
+                                    entryType: .regular,
+                                    isPaid: expense.isPaid,
+                                    paidDate: expense.paidDate
+                                )
+                                
+                                loadedEntries.append(baseEntry)
+                                
+                                // Generate future entries starting from the base entry's date
+                                let futureEntries = self.generateRecurringEntries(from: baseEntry)
+                                loadedEntries.append(contentsOf: futureEntries)
+                            }
+                        }
+                        
+                        self.entries = loadedEntries
+                        self.userProfile = dataStore.userProfile
+                        self.deposits = dataStore.deposits
+                    }
+                } catch {
+                    print("Error loading entries: \(error)")
+                    DispatchQueue.main.async {
+                        self.entries = []
+                        self.userProfile = nil
+                        self.deposits = []
+                    }
                 }
             }
-            
-            entries = loadedEntries
-            userProfile = dataStore.userProfile
-            deposits = dataStore.deposits
         } catch {
             print("Error loading entries: \(error)")
             entries = []
             userProfile = nil
             deposits = []
         }
-    }
-    
-    private func getEntriesFile() -> URL {
-        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return documentsDirectory.appendingPathComponent("budgetEntries.json")
     }
     
     func togglePaymentStatus(_ entry: BudgetEntry) {
